@@ -1,0 +1,123 @@
+---
+title: "MR"
+author: "gh"
+date: '`r Sys.Date()`'
+output: html_document
+---
+# MR
+
+```{r MR}
+getwd()
+library('devtools')
+#install_github("MRCIEU/TwoSampleMR")
+library(TwoSampleMR)
+
+#获取MR base的表型ID，将结果保存为pheno_info.csv这个文件
+#ao <-available_outcomes(access_token=NULL)
+#write.csv(ao,'pheno_info.csv',row.names=F)
+ao <- read.csv('./pheno_info.csv')
+
+#查看pheno_info.csv文件，获取与暴露相关的工具变量的信息以及结局信息。
+#这里选择暴露为obesity class 2 （ID = 91）， 结局为 type 2 diabetes (ID = 1090)
+
+
+exp_dat <- extract_instruments(outcomes=91,access_token=NULL)
+obesity_exp_dat <- clump_data(exp_dat)
+t2d_out_dat <- extract_outcome_data(snps=obesity_exp_dat$SNP, outcomes=1090, access_token=NULL)
+dat <- harmonise_data(exposure_dat =obesity_exp_dat, outcome_dat= t2d_out_dat)
+
+#计算MR
+res <- mr(dat)
+res
+
+```
+
+# bmi
+
+```{r}
+bmi <-extract_instruments(outcomes='ieu-a-2',access_token = NULL) #用默认参数获取IV,clump=TRUE,r2=0.001, kb=10000
+dim(bmi)
+bmi <-extract_instruments(outcomes='ieu-a-2',
+                          clump=TRUE, r2=0.01,
+                          kb=5000,access_token = NULL
+                          )
+dim(bmi)
+
+bmi<-extract_instruments(outcomes='ieu-a-2',clump=FALSE, access_token = NULL)
+dim(bmi)
+
+exp_dat <-clump_data(bmi,clump_r2=0.01,clump_kb=5000)
+#有一个pop参数需要注意一下，这个参数是用来指定参考基因组的人种的，默认值为pop=’EUR’，也即认为暴露的GWAS是欧洲人群，如果咱们研究的是中国人，则可以设置pop='EAS'
+dim(exp_dat)
+
+# 提取IV在结局中的信息,以ieu-a-835为例，该研究是同一人种
+bmi_exp <- extract_instruments(
+ outcomes='ieu-a-835',
+ clump=TRUE, r2=0.01,
+ kb=5000,access_token = NULL
+  )
+dim(bmi_exp)
+
+t2d_out <- extract_outcome_data(
+ snps=bmi_exp$SNP,
+ outcomes='ieu-a-26',
+ proxies = FALSE,
+ maf_threshold = 0.01,
+ access_token = NULL
+)
+dim(t2d_out)
+
+##将IV的效应等位基因（effect allele）对齐
+mydata <- harmonise_data(
+       exposure_dat=bmi_exp,
+       outcome_dat=t2d_out,
+       action= 2
+       )
+
+res <- mr(mydata)
+res
+
+##异质性检验
+
+het <- mr_heterogeneity(mydata)
+het  #IV之间存在很强的异质性（Q_pval远小于0.05）
+
+mr(mydata,method_list=c('mr_ivw_mre')) #使用随机效应模型,剔除某些outcome的P值非常小的SNP，或者直接使用随机效应模型来估计MR效应量
+
+```
+
+
+# 多效性检验
+```{r}
+pleio <- mr_pleiotropy_test(mydata)
+pleio
+#MR-Egger的egger_intercept和0没有统计学差异（pval > 0.05），因此我们可以认为没有水平多效性的存在。
+```
+
+# 逐个剔除检验
+```{r}
+single <- mr_leaveoneout(mydata)
+mr_leaveoneout_plot(single)
+#无论去除哪个SNP都不会对结果产生根本影响（所有的线条均在0的右侧），那就是说这个MR结果实际是稳健的
+```
+
+# 绘制散点图
+```{r}
+mr_scatter_plot(res,mydata)
+```
+
+# 绘制森林图
+```{r}
+res_single <- mr_singlesnp(mydata)
+mr_forest_plot(res_single)
+```
+
+#绘制敏感性分析图
+```{r}
+```
+
+# 绘制漏斗图
+```{r}
+
+mr_funnel_plot(res_single)
+```

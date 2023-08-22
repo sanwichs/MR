@@ -1,0 +1,905 @@
+---
+title: "linear_mix"
+output: html_document
+date: '2023-06-07'
+editor_options: 
+  chunk_output_type: inline
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+setwd('./')
+# EDA
+data_old=read.csv('../linear_mix.csv')
+data_old
+```
+```{r}
+data_remove_extr=read.csv('../linear_mix_RNA_40_500.csv')
+data_remove_extr
+```
+```{r}
+linear_fixed=read.csv("../linear_fixed.csv", fileEncoding = 'GBK')
+linear_fixed
+```
+
+```{r}
+data=data_old
+Tissue_cols=colnames(data)[2:14]
+Tissue_cols
+##TODO: PCR:log10(x/10+1) DONE
+```
+
+
+ddPCR用这个，-1是na，0是negative。
+```{r}
+colnames(data)
+```
+
+
+```{r}
+##更换数据源看EDA
+data0=read.csv('../log10_ddPCR.csv')
+data0
+```
+不能用，na和negative都是0
+
+```{r}
+data_patho=read.csv('../new_patho_ddPCR.csv')
+data_patho
+```
+0 没有病变，1是有病变；NA缺失；组织比PCR少
+
+TCD 母亲感染时间；PCW 孕周；
+##1、修改变量重新分析：TCD胎儿接触病毒的时间：TCD or PCW、PCW-TCD胎儿接触病毒时的怀孕时间：dPCWminusTCD；和ddPCR的关系
+
+```{r}
+data$FTCD=data$TCD
+for (p in data[,'Organ.ID']){
+  if(as.numeric(data[data[,'Organ.ID']==p,'dPCWminusTCD'])>0){
+    data[data[,'Organ.ID']==p,'FTCD']=data[data[,'Organ.ID']==p,'TCD']
+  }else{data[data[,'Organ.ID']==p,'FTCD']=as.numeric(data[data[,'Organ.ID']==p,'dPCWminusTCD'])+as.numeric(data[data[,'Organ.ID']==p,'TCD'])}
+}
+data
+```
+
+
+```{r}
+##TODO: 分组织看散点
+
+plot_list <- list()
+j=1
+library(GGally)
+# 使用GGally包的ggpairs函数,按照tissue绘制data数据集的散点图矩阵
+for (i in Tissue_cols){
+  title=paste('Scatterplot Matrix for ',i,sep='')
+  print(i)
+  alone=data[,c('TCD','PCW',i)]
+  colnames(alone)=c('TCD','PCW','ddPCR')
+  alone=alone[alone[,'ddPCR']!=-1,]
+  alone$log10_ddPCR=log10(alone$ddPCR/10+1)
+  alone2=alone[,c('TCD','PCW','log10_ddPCR')]
+  colnames(alone2)=c('TCD','PCW','log10(ddPCR/10+1)')
+  print('ok')
+  p=ggpairs(data = alone2, title = title)
+  #name=paste('new_scatterplot_log',i,'.png',sep='')
+  #ggsave(name, p)
+  plot_list[[j]]=p
+  j=j+1
+}
+plot_list
+```
+
+```{r}
+#install.packages('lme4')
+library(lmerTest)
+#install.packages("sjPlot")
+library(sjPlot)
+plot_list=list()
+j=1
+##TODO: 分组织类型分组，对DOI看多元回归
+for (i in Tissue_cols){
+  alone=data[,c(i,'TCD','PCW','Organ.ID')]
+  colnames(alone)=c('ddPCR','TCD','PCW','ID')
+  #name=paste('linear_mix_',i,'.png',sep='')
+  alone=alone[alone[,'ddPCR']!=-1,]
+  alone$log10_ddPCR = log10(alone$ddPCR/10+1)
+  model <- lm(log10_ddPCR ~ TCD + PCW, data = alone)
+  # Plot the fixed effects
+  plot_list[[j]]=plot_model(model, type = "pred", terms = c("TCD"), ci.lvl = 0.95,show.data = TRUE)
+  j=j+1
+  ##计算模型数据，储存
+  sum=capture.output(summary(model))
+  name2=paste('linear_mix_summary',i,'.txt',sep='')
+  writeLines(sum,name2)
+}
+plot_list
+```
+
+
+```{r}
+##TODO：不分组织，看混合线性回归
+library(reshape2)
+rest=setdiff(colnames(data),Tissue_cols)
+reform_long_data=melt(data, id.vars = rest, variable.name = "Tissue", value.name = "ddPCR")
+alone=reform_long_data[reform_long_data[,'ddPCR']!=-1,]
+alone$log10_ddPCR=log10(alone$ddPCR/10+1)
+alone
+```
+
+```{r}
+library(lmerTest)
+model <- lmer(log10_ddPCR ~ TCD + (1|PCW)+ (1|Tissue), data = alone)
+# Plot the fixed effects
+p=plot_model(model, type = "pred", terms = c("TCD"), ci.lvl = 0.95,show.data = TRUE)
+p
+sum=capture.output(summary(model))
+name2=paste('all_linear_mix_summary','.txt',sep='')
+writeLines(sum,name2)
+```
+```{r}
+##整体画散点图，分组织画变化趋势图
+##整体散点图～TCD+平均值曲线，点的颜色分为PCW<12和PCW>12；
+alone
+```
+##
+
+```{r}
+# Pre-calculate mean values for each group
+mean_data <- alone %>% 
+  group_by(pcw_group, TCD) %>% 
+  summarise(mean_log10_ddPCR = mean(log10_ddPCR))
+
+colnames(mean_data)[3]='log10_ddPCR'
+mean_data
+```
+
+```{r}
+library(ggplot2)
+library(dplyr)
+
+group_colors <- c("#85A1C1", "#A67F81")
+# Scatter plot
+scatter_plot <- ggplot(data = alone, aes(x = TCD, y = log10_ddPCR, color = pcw_group)) +
+  geom_point(shape = 16, size = 3, alpha = 0.3) +  # Lower alpha for lighter points
+  scale_color_manual(values = group_colors) +
+  guides(color = FALSE)+
+  ylim(0, 1.55) +
+  xlab("TCD") +
+  ylab("log10(ddPCR/10+1)") +
+  theme_minimal() +
+  theme(axis.text = element_text(size = 12),
+        axis.title = element_text(size = 14, face = "bold"),
+        legend.text = element_text(size = 12),
+        legend.title = element_text(size = 14, face = "bold"),
+        panel.grid.major.x = element_blank(),  # Remove major x-axis gridlines
+        panel.grid.minor.x = element_blank(),  # Remove minor x-axis gridlines
+        panel.grid.major.y = element_line(color = "lightgray", size = 0.3),  # Add major y-axis gridlines
+        panel.grid.minor.y = element_line(color = "lightgray", size = 0.3),  # Add minor y-axis gridlines
+        panel.border = element_blank(),
+        panel.background = element_blank(),
+        legend.background = element_rect(fill = "white"),
+        legend.key = element_rect(fill = "white", color = "white"),
+        axis.line = element_line(color = "black", size = 0.5),  # Set axis lines to thin black
+        axis.ticks = element_line(color = "black", size = 0.5)  # Set axis ticks to thin black
+  )
+
+# Mean lines plot
+mean_lines_plot <- ggplot(data = mean_data, aes(x = TCD, y = log10_ddPCR, color = pcw_group, group = pcw_group)) +
+  geom_line(size = 1.5, alpha = 1) +  # Set alpha to 1 for solid lines
+  scale_color_manual(values = c("darkblue", "darkred"),
+                     guide = guide_legend(title = "Group"),
+                     labels = c("PCW<12", "PCW≥12")) +
+  ylim(0, 1.55) + 
+  theme_void() +
+  theme(legend.position = "top")  # Set legend position to top
+
+# Combine scatter plot and mean lines plot on the same plot
+F1=scatter_plot + annotation_custom(ggplotGrob(mean_lines_plot), xmin = -Inf, xmax = Inf, ymin = -Inf, ymax = Inf)
+ggsave(F1,filename ='total.pdf',path = './tissue_ddPCR_fig/')
+F1
+```
+
+
+```{r}
+##按照组织分开汇报，直接多元线性回归。承认我们发现的PCW的趋势。虽然这个可能有不准确的地方。
+library(ggplot2)
+plot_list <- list()
+j=1
+for (k in 1:2) {
+for (i in 2:14) {
+  Tissue=colnames(data)[i]
+groups=c('≥12','<12')
+group_colors <- c("#A67F81","#85A1C1")
+group=groups[k]
+color=group_colors[k]
+test=data[,c('TCD','PCW',Tissue,'pcw_group','Organ.ID')]
+test=test[test[,'pcw_group']==group,]
+colnames(test)=c('TCD','PCW','log10_ddPCR','pcw_group','Organ.ID')
+test$log10TCD=log10(test$TCD)
+model=lm(log10_ddPCR ~ TCD, data = test)
+model_summary <- summary(model)
+out=capture.output(model_summary)
+intercept <- model_summary$coefficients[1, "Estimate"]
+slope <- model_summary$coefficients[2, "Estimate"]
+p1=ggplot(data = test, aes(x = TCD, y = log10_ddPCR)) +
+  geom_smooth(method = 'lm', alpha = 0.2, colour = color,linewidth=2) +
+    geom_point(alpha=0.3,
+      shape = 16, 
+      size = 5,colour=color) +
+    xlab('TCD') +
+    ylab("log10_dPCR") +
+  #geom_abline(intercept = intercept, slope = slope, col = "red")+
+  theme_classic()+
+    theme(legend.position = "none",
+          axis.text.x = element_text(colour = 'black', size = 20),
+          axis.text.y = element_text(size = 20, colour = 'black'),
+          axis.title = element_text(size = 22),
+          plot.title = element_text(size = 26),
+          plot.subtitle = element_text(size = 24))+
+  ggtitle(paste(Tissue,'pcw:',groups[k]),subtitle = paste("y = ", round(slope, 2), " x + ", round(intercept, 2),
+                                   ", P =", round(summary(model)$coefficients["TCD","Pr(>|t|)"], 3)))
+ggsave(p1,filename =paste('pcw_',k,Tissue,'.pdf'),path = './tissue_ddPCR_fig/',width = 10,height = 7)
+#p1=p1+annotate("text", x = min(test$TCD), y = max(test$log10_ddPCR),
+#                    label = paste0("y = ", round(slope, 2), " x + ", #round(intercept, 2),
+#                                   ", P =", #round(summary(model)$coefficients["TCD","Pr(>|t|)"], 3)),hjust = 0, vjust #= 1)
+plot_list[[j]]=p1
+j=j+1
+}
+}
+plot_list
+```
+
+
+
+```{r}
+###pcw与ddPRC线性回归
+plot_list <- list()
+j=1
+for (i in 2:14) {
+  Tissue=colnames(data)[i]
+
+test=data[,c('TCD','PCW',Tissue,'pcw_group','Organ.ID')]
+colnames(test)=c('TCD','PCW','log10_ddPCR','pcw_group','Organ.ID')
+test$log10TCD=log10(test$TCD)
+model=lm(log10_ddPCR ~ PCW, data = test)
+model_summary <- summary(model)
+out=capture.output(model_summary)
+intercept <- model_summary$coefficients[1, "Estimate"]
+slope <- model_summary$coefficients[2, "Estimate"]
+p1=ggplot(data = test, aes(x = PCW, y = log10_ddPCR)) +
+  geom_smooth(method = 'lm', alpha = 0.2, colour = 'black',linewidth=2) +
+    geom_point(alpha=0.3,
+      shape = 16, 
+      size = 5,colour='black') +
+    xlab('PCW') +
+    ylab("log10_dPCR") +
+  #geom_abline(intercept = intercept, slope = slope, col = "red")+
+  theme_classic()+
+    theme(legend.position = "none",
+          axis.text.x = element_text(colour = 'black', size = 20),
+          axis.text.y = element_text(size = 20, colour = 'black'),
+          axis.title = element_text(size = 22),
+          plot.title = element_text(size = 26),
+          plot.subtitle = element_text(size = 24))+
+  ggtitle(Tissue,subtitle = paste("y = ", round(slope, 2), " x + ", round(intercept, 2),
+                                   ", P =", round(summary(model)$coefficients["PCW","Pr(>|t|)"], 3)))
+ggsave(p1,filename =paste("ddPCR~PCW",Tissue,'.pdf'),path = './tissue_ddPCR_fig/',width = 10,height = 7)
+#p1=p1+annotate("text", x = min(test$TCD), y = max(test$log10_ddPCR),
+#                    label = paste0("y = ", round(slope, 2), " x + ", #round(intercept, 2),
+#                                   ", P =", #round(summary(model)$coefficients["TCD","Pr(>|t|)"], 3)),hjust = 0, vjust #= 1)
+plot_list[[j]]=p1
+j=j+1
+}
+plot_list
+```
+
+```{r}
+test
+```
+
+
+#################################################
+#2、实验记录-勿动
+##线性相关性分析
+##无删减混线TCD
+```{r}
+##更新数据
+longe_data=read.csv('../log10_ddPCR.csv')
+longe_data=longe_data[longe_data[,'log10_dPCR']!=0,]
+longe_data$log10TCD=log10(longe_data$TCD)
+library(lmerTest)
+library(lme4)
+library(sjPlot)
+##无数据删减，混合线性模型，看总体趋势
+model <- lmerTest::lmer(log10_dPCR ~ (1|PCW) +(1|Tissue)+ log10TCD, data = longe_data)
+model_summary <- summary(model)
+out=capture.output(model_summary)
+intercept <- model_summary$coefficients[1, "Estimate"]
+slope <- model_summary$coefficients[2, "Estimate"]
+p1=ggplot(data = longe_data, aes(x = log10TCD, y = log10_dPCR,label=Patient_ID)) +
+    geom_point(shape = 16, size = 0.5) +
+    geom_text(hjust = -0.2, vjust = 0.5) +
+    xlab("log10TCD") +
+    ylab("log10_dPCR") +geom_abline(intercept = intercept, slope = slope, col = "red")+theme_classic()+
+    theme(legend.position = "none")
+p1=p1+annotate("text", x = min(longe_data$log10TCD), y = max(longe_data$log10_dPCR),
+                    label = paste0("y = ", round(slope, 2), " x + ", round(intercept, 2),
+                                   ", P =", round(summary(model)$coefficients["log10TCD","Pr(>|t|)"], 3)),hjust = 0, vjust = 1)
+plot(p1)
+name1=paste('linear_mix_all_new_longdata_dotp.png')
+ggsave(name1,p1)
+name='all_linear_mix.txt'
+writeLines(out,name)
+
+```
+##无删减多元线性回归
+```{r}
+##多元线性模型看趋势
+model <- lm(log10_dPCR ~ TCD + PCW+Tissue, data = longe_data)
+summary(model)
+```
+
+##无删减混线PCW
+```{r}
+##混合线性模型，看PCW总体趋势
+model <- lmerTest::lmer(log10_dPCR ~ PCW +(1|Tissue)+ TCD, data = longe_data)
+model_summary <- summary(model)
+out=capture.output(model_summary)
+intercept <- model_summary$coefficients[1, "Estimate"]
+slope <- model_summary$coefficients[2, "Estimate"]
+p1=ggplot(data = longe_data, aes(x = PCW, y = log10_dPCR,label=Patient_ID)) +
+    geom_point(shape = 16, size = 0.5) +
+    geom_text(hjust = -0.2, vjust = 0.5) +
+    xlab("PCW") +
+    ylab("log10_dPCR") +geom_abline(intercept = intercept, slope = slope, col = "red")+theme_classic()+
+    theme(legend.position = "none")
+p1=p1+annotate("text", x = min(longe_data$PCW), y = max(longe_data$log10_dPCR),
+                    label = paste0("y = ", round(slope, 2), " x + ", round(intercept, 2),
+                                   ", P =", round(summary(model)$coefficients["PCW","Pr(>|t|)"], 3)),hjust = 0, vjust = 1)
+plot(p1)
+```
+##去除组织效应（平均ddPCR）
+###多元线性回归
+```{r}
+data_ave=data.frame(P=unique(longe_data[,'Patient_ID']),TCD=0,log10_dPCR_ave=0,PCW=0)
+rownames(data_ave)=data_ave$P
+##先把单个患者不同组织直接取平均值,再多元
+for (i in unique(longe_data[,'Patient_ID'])){
+  data_ave[i,'log10_dPCR_ave']=log10(mean(10^(longe_data[longe_data[,'Patient_ID']==i,][,'log10_dPCR'])))
+  data_ave[i,'TCD']=unique(longe_data[longe_data[,'Patient_ID']==i,][,'TCD'])
+  data_ave[i,'PCW']=unique(longe_data[longe_data[,'Patient_ID']==i,][,'PCW'])
+}
+data_ave$log10TCD=log10(data_ave$TCD)
+model <- lm(log10_dPCR_ave ~ TCD + PCW, data = data_ave)
+summary(model)
+```
+
+```{r}
+library(GGally)
+ggpairs(data_ave[,c('TCD','PCW','log10_dPCR_ave')])
+```
+
+###混合线性模型
+```{r}
+model <- lmer(log10_dPCR_ave ~ log10TCD + (1|PCW), data = data_ave)
+summary(model)
+```
+###平均ddPCR 散点图
+```{r}
+##由于总是差点显著，所以直接看趋势，想用spearman直接只输出corr了，线性的系数可能很好解释，但是看看形状决定一下模型
+library(GGally)
+p=ggpairs(data = data_ave[,c('TCD','PCW','log10_dPCR_ave')], title = 'ave_log10dPCR scatterplot')
+p
+
+```
+
+##删除患者做log10回归
+```{r}
+new_patho_ddPCR=read.csv('~/Dropbox/Single_cell/Disease/新冠/new_patho_ddPCR.csv')
+Tissues_col=gsub(" ", ".", Tissues)
+data_reshape=new_patho_ddPCR[,c('ID','TCD','PCW',Tissues_col)]
+library(tidyr)
+longe_data=data_reshape %>%
+  pivot_longer(cols = Tissues_col, names_to = "Tissue", values_to = "ddPCR") %>%
+  drop_na()
+min(longe_data$ddPCR[longe_data$ddPCR!=0])
+longe_data$log10_ddPCR=log10(longe_data$ddPCR/10+1)
+longe_data$log10TCD=log10(longe_data$TCD)
+longe_data
+```
+
+##删除方法探索
+###分层聚类
+```{r}
+#分层聚类，后PCA查看是否有离群值？
+# 执行分层聚类
+set.seed(123)
+hc <- hclust(dist(data_reshape[,c('TCD','PCW')]), method = "centroid")
+
+# 将数据分为两个类别
+k <- cutree(hc, k = 3)
+
+plot(hc)
+
+```
+###em  by TCD，PCW
+```{r}
+library(mclust)
+data_ave_allogcate =data_reshape[,c('TCD','PCW')]
+#data_ave_allogcate$dPCR_ave=10^(data_ave_allogcate$log10_dPCR_ave)
+em1 <- Mclust(data_ave_allogcate,G=2)
+summary(em1)
+k=em1$classification
+plot(em1)
+```
+尝试别的聚类方法吧
+```{r}
+library(meanShiftR)
+
+ms=meanShift(as.matrix(data_reshape[,c('TCD','PCW')]),algorithm="LINEAR", nNeighbor=2)
+
+# 提取聚类结果
+labels <- ms$assignment
+labels
+```
+
+###em  by TCD,PCW,log10ddPCR_ave
+```{r}
+library(mclust)
+data_ave_allogcate = scale(data_ave[,c('TCD','PCW','log10_dPCR_ave')])
+#data_ave_allogcate$dPCR_ave=10^(data_ave_allogcate$log10_dPCR_ave)
+em2 <- Mclust(data_ave_allogcate)
+summary(em2)
+k=em2$classification
+plot(em2)
+```
+###kmeans试一下
+```{r}
+km=kmeans(data_reshape[,c('TCD','PCW')], centers = 2, algorithm = "Hartigan-Wong")
+k=km$cluster
+k
+```
+
+##检查kmeans和em聚类的结果
+###马氏距离检查
+```{r}
+# 计算数据集中每个数据点的马氏距离
+mahalanobis_dist <- mahalanobis(data_ave_allogcate, colMeans(data_ave_allogcate), cov(data_ave_allogcate))
+
+# 定义阈值或使用统计标准来判断离群值，效果不好
+mahalanobis_dist
+```
+
+###做PCA图检查
+```{r}
+##PCA看看
+# k=em1$classification
+k=em1$classification
+# k=km$cluster
+
+# 运行PCA算法将数据降维到二维
+set.seed(123)
+pca_result <- prcomp(data_ave[, c('TCD','PCW','log10_dPCR_ave')], scale. = TRUE, center = TRUE, rank = 2)
+
+# 提取降维后的两个主成分
+pca_data <- data.frame(pca_result$x[, 1:2], Label = data_ave$P)
+
+# 绘制二维PCA图
+ggplot(pca_data, aes(x = PC1, y = PC2, label=Label,color = k)) +
+  geom_point() +
+  geom_text(hjust = -0.2, vjust = 0.5) + 
+  labs(x = "PC1", y = "PC2") +
+  theme_minimal()+
+  theme(legend.position = "none")  # 取消图例
+##
+
+```
+
+###做TCD PCW图检查
+```{r}
+# 绘制二维图
+plot_group=data_reshape[, c('TCD','PCW','ID')]
+k=as.character(k)
+p3=ggplot(plot_group, aes(x = TCD, y = PCW, label=ID,color = k)) +
+  geom_point() +
+  #geom_text(hjust = -0.2, vjust = 0.5) + 
+  labs(x = "TCD", y = "PCW") +
+  theme_classic()+
+  scale_color_manual(values = c("#6395D4", "#8F9498"), labels = c("Group1", "Group2"),title='Clustering by EM (EVI model)')+
+  theme(panel.grid = element_line(color = "gray"))
+  #theme(legend.position = "none")  # 取消图例
+##
+p3
+```
+
+```{r}
+library(lmerTest)
+library(sjPlot)
+
+
+##重新对组织类型分组，对DOI看趋势
+for (i in Tissues){
+  name=''
+  name2=''
+  print(i)
+  longe_data_left=longe_data[mask,]
+  alone=longe_data_left[longe_data_left[,'Tissue']==i,c('log10_ddPCR','log10TCD','PCW')]
+  colnames(alone)=c('log10_ddPCR','log10TCA','PCW')
+  name=paste('linear_mix_',i,'.png',sep='')
+  calculate=function(){model <- lmer(log10_ddPCR ~ log10TCA + (1 | PCW), data = alone)
+  p=plot_model(model, type = "pred", terms = c("log10TCA"), ci.lvl = 0.95,show.data = TRUE)
+  ggsave(name, p)
+  sum=capture.output(summary(model))
+  name2=paste('linear_mix_summary',i,'.txt',sep='')
+  writeLines(sum,name2)
+  return('ok')}
+  report=tryCatch({
+    calculate()}, error = function(e) {
+    # 打印错误信息
+    cat("错误信息:", conditionMessage(e), "\n")
+    return('N/A')
+    })
+  print(report)
+}
+```
+
+```{r}
+##计算平均值
+means={}
+for (i in 1:length(Tissues_col)){
+  list=na.omit(data_reshape[,Tissues_col[i]])
+  means[[i]]=mean(list)
+  print(Tissues_col[i])
+  print(means[[i]])
+}
+
+
+```
+
+
+###混线TCD～PCR
+```{r}
+##重新画混合线性模型
+mask=longe_data$ID %in% data_reshape[k == '1', 1]
+#mask=rep(TRUE,length(longe_data$ID))
+model <- lmerTest::lmer(log10TCD ~ (1|PCW) +(1|Tissue)+ log10_ddPCR, data =longe_data[mask,])
+model_summary <- summary(model)
+out=capture.output(model_summary)
+intercept <- model_summary$coefficients[1, "Estimate"]
+slope <- model_summary$coefficients[2, "Estimate"]
+p2=ggplot(data = longe_data[mask,], aes(x =log10_ddPCR , y = log10TCD,label=ID)) +
+    geom_point(shape = 16, size = 0.5) +
+    #geom_text(hjust = -0.2, vjust = 0.5) +
+    xlab("log10(ddPCR+1)") +
+    ylab("log10TCD") +geom_abline(intercept = intercept, slope = slope, col = "#8B0000")+theme_classic()+
+    theme(legend.position = "none")
+p2=p2+annotate("text", x = min(longe_data[mask,]$log10_ddPCR), y = 0.98*max(longe_data[mask,]$log10TCD),
+                    label = paste0("y = ", format(slope, scientific = TRUE, digits = 2), " x + ", round(intercept, 2),", P(slope) =", round(summary(model)$coefficients[2,"Pr(>|t|)"], 3),", P(intercept) =",format( summary(model)$coefficients[1,"Pr(>|t|)"], scientific = TRUE, digits = 2),'***'),hjust = 0, vjust = 1,size=2)
+plot(p2)
+
+```
+###混线PCR～TCD
+```{r}
+##重新画混合线性模型
+mask=longe_data$ID %in% data_reshape[k == '1', 1]
+#mask=rep(TRUE,length(longe_data$ID))
+model <- lmerTest::lmer(log10_ddPCR ~ (1|PCW) +(1|Tissue)+ log10TCD, data =longe_data[mask,])
+model_summary <- summary(model)
+out=capture.output(model_summary)
+intercept <- model_summary$coefficients[1, "Estimate"]
+slope <- model_summary$coefficients[2, "Estimate"]
+p1=ggplot(data = longe_data[mask,], aes(x = log10TCD, y = log10_ddPCR,label=ID)) +
+    geom_point(shape = 16, size = 0.5) +
+    #geom_text(hjust = -0.2, vjust = 0.5) +
+    xlab("log10TCD") +
+    ylab("log10(ddPCR/10+1)") +geom_abline(intercept = intercept, slope = slope, col = "#8B0000")+theme_classic()+
+    theme(legend.position = "none")
+p1=p1+annotate("text", x = min(longe_data[mask,]$log10TCD), y =0.955* max(longe_data[mask,]$log10_ddPCR),
+                    label = paste0("y = ", round(slope, 2), " x + ", round(intercept, 2),
+                                   ", P(slope) =", round(summary(model)$coefficients["log10TCD","Pr(>|t|)"], 3),", P(intercept) =", round(summary(model)$coefficients[1,"Pr(>|t|)"], 3)),hjust = 0, vjust = 1,size=2)
+plot(p1)
+
+```
+
+```{r}
+grid.arrange(p3,p2,p1, ncol = 3)
+```
+
+
+###所有37患者
+```{r}
+p1=ggplot(data = longe_data, aes(x = TCD, y = log10_dPCR,label=Patient_ID)) +
+    geom_point(shape = 16, size = 0.5) +
+    geom_text(hjust = -0.2, vjust = 0.5) +
+    ylab("log10_dPCR") +
+    xlab("TCD") +theme_classic()+
+    theme(legend.position = "none")
+plot(p1)
+```
+可以说是很显然删掉了大TCD，高ddPCR的患者，所以会显著下降了
+
+```{r}
+##上面都是按照聚类分组的
+mask=longe_data[,'Patient_ID']%in%data_ave[k=='2',1]
+```
+###尝试直接用PCW过滤+混线
+```{r}
+##重新在小PCW组画混合线性模型，PCW阈值为17.5
+mask=longe_data[,'PCW']<17.5
+model <- lmerTest::lmer(log10_dPCR ~ (1|PCW) +(1|Tissue)+ log10TCD, data =longe_data[mask,])
+model_summary <- summary(model)
+out=capture.output(model_summary)
+intercept <- model_summary$coefficients[1, "Estimate"]
+slope <- model_summary$coefficients[2, "Estimate"]
+p1=ggplot(data = longe_data[mask,], aes(x = log10TCD, y = log10_dPCR,label=Patient_ID)) +
+    geom_point(shape = 16, size = 0.5) +
+    #geom_text(hjust = -0.2, vjust = 0.5) +
+    xlab("log10TCD") +
+    ylab("log10_dPCR") +geom_abline(intercept = intercept, slope = slope, col = "red")+theme_classic()+
+    theme(legend.position = "none")
+p1=p1+annotate("text", x = min(longe_data[mask,]$log10TCD), y = max(longe_data[mask,]$log10_dPCR),
+                    label = paste0("y = ", round(slope, 2), " x + ", round(intercept, 2),
+                                   ", P =", round(summary(model)$coefficients["log10TCD","Pr(>|t|)"], 3)),hjust = 0, vjust = 1)
+plot(p1)
+```
+###去除组织效应+还是聚类分组
+```{r}
+##重新在均值中画混合线性模型
+mask=data_ave[,'P']%in%data_ave[k=='1','P']
+model <- lmerTest::lmer(log10_dPCR_ave ~ (1|PCW) + log10TCD, data =data_ave[mask,])
+model_summary <- summary(model)
+out=capture.output(model_summary)
+intercept <- model_summary$coefficients[1, "Estimate"]
+slope <- model_summary$coefficients[2, "Estimate"]
+p1=ggplot(data = data_ave[mask,], aes(x = log10TCD, y = log10_dPCR_ave,label=P)) +
+    geom_point(shape = 16, size = 0.5) +
+    geom_text(hjust = -0.2, vjust = 0.5) +
+    xlab("log10TCD") +
+    ylab("log10_dPCR_ave") +geom_abline(intercept = intercept, slope = slope, col = "red")+theme_classic()+
+    theme(legend.position = "none")
+p1=p1+annotate("text", x = min(data_ave[mask,]$log10TCD), y = max(data_ave[mask,]$log10_dPCR),
+                    label = paste0("y = ", round(slope, 2), " x + ", round(intercept, 2),
+                                   ", P =", round(summary(model)$coefficients["log10TCD","Pr(>|t|)"], 3)),hjust = 0, vjust = 1)
+plot(p1)
+
+```
+
+```{r}
+##线性模型
+mask=data_ave[,'P']%in%data_ave[k=='1','P']
+model <- lm(log10_dPCR_ave ~ PCW + TCD, data =data_ave[mask,])
+summary(model)
+```
+
+```{r}
+
+#储存model
+model_summary <- summary(model)
+out=capture.output(model_summary)
+intercept <- model_summary$coefficients[1, "Estimate"]
+slope <- model_summary$coefficients[2, "Estimate"]
+p1=ggplot(data = longe_data, aes(x = log10TCD, y = log10_dPCR)) +
+    geom_point(shape = 16, size = 0.5) +
+    xlab("log10TCD") +
+    ylab("log10_dPCR") +geom_abline(intercept = intercept, slope = slope, col = "red")+theme_classic()
+p1=p1+annotate("text", x = min(longe_data$log10TCD), y = max(longe_data$log10_dPCR),
+                    label = paste0("y = ", round(slope, 2), " x + ", round(intercept, 2),
+                                   ", P =", round(summary(model)$coefficients["log10TCD","Pr(>|t|)"], 3)),hjust = 0, vjust = 1)
+plot(p1)
+name1=paste('linear_mix_all_new_longdata_dotp.png')
+ggsave(name1,p1)
+name='all_linear_mix.txt'
+writeLines(out,name)
+
+```
+
+```{r}
+#按组织混合线性模型
+for (i in unique(longe_data[,'Tissue'])){
+  alone=longe_data[longe_data[,'Tissue']==i,]
+  name=paste('linear_mix_tissue_new_longdata',i,'.png',sep='')
+  model <- lmer(log10_dPCR ~ log10TCD + (1 | PCW), data = alone)
+  a=summary(model)
+  intercept <- a[['coefficients']][1, "Estimate"]
+  slope <- a[['coefficients']][2, "Estimate"]
+  
+  p1=ggplot(data = alone, aes(x = log10TCD, y = log10_dPCR)) +
+    geom_point(shape = 16, size = 0.5) +
+    xlab("log10TCD") +
+    ylab("log10_dPCR") +geom_abline(intercept = intercept, slope = slope, col = "red")+theme_classic()
+  p1=p1+annotate("text", x = min(alone$log10TCD), y = max(alone$log10_dPCR),
+                    label = paste0("y = ", round(slope, 2), " x + ", round(intercept, 2),
+                                   ", P =", round(summary(model)$coefficients["log10TCD", "Pr(>|t|)"], 3)),
+                    hjust = 0, vjust = 1)
+  name1=paste('linear_mix_tissue_new_longdata_dotp',i,'.png',sep='')
+  print('done')
+  ggsave(name1,p1)
+  sum=capture.output(summary(model))
+  name2=paste('linear_mix_summary_tissue_new_longdata',i,'.txt',sep='')
+  writeLines(sum,name2)
+}
+```
+
+#病理类型
+## 看病理和PC1、PC2的分布关系
+```{r}
+
+##看看patho的分布
+patho=read.csv('~/Dropbox/Single_cell/Disease/新冠/patho.csv')
+patho
+
+CPEs=colnames(patho)[7:13]
+
+
+
+##对不同组织画图
+Tissue='Placenta'
+patho_tissue=patho[patho[,'Tissue']==Tissue,]
+colnames(patho_tissue)[2]='Label'
+
+patho_tissue=patho_tissue[complete.cases(patho_tissue$ddPCR), ]
+##PCA看看
+# 运行PCA算法将数据降维到二维
+set.seed(123)
+pca_result <- prcomp(patho_tissue[, c('TCD','PCW','ddPCR')], scale. = TRUE, center = TRUE, rank = 2)
+
+# 提取降维后的两个主成分
+pca_data <- data.frame(pca_result$x[, 1:2], Label = patho_tissue$Label)
+
+##合体PCA和CEP
+merge=merge(patho_tissue, pca_data, by = "Label", all = FALSE)
+merge[is.na(merge)] <- "N/A"
+
+plot_list <- list()
+for (i in 1:length(CPEs)){
+  name=paste(CPEs[i],' in ',Tissue)
+  merge_data=merge[,c('PC1','PC2',CPEs[i],'Label','ddPCR','TCD')]
+  colnames(merge_data)=c('PC1','PC2','CPE_result','Label','ddPCR','TCD')
+  plot_list[[i]]=ggplot(merge_data, aes(x = PC1, y = PC2, label=Label,color = CPE_result)) +
+  geom_point() +
+  geom_text(hjust = -0.2, vjust = 0.5) + 
+  labs(x = "PC1", y = "PC2",title=name) +
+  theme_minimal()
+  #theme(legend.position = "none")
+}
+plot_list
+
+
+
+
+
+```
+
+##看病理和ddPCR，TCD的关系
+
+```{r}
+
+##对不同组织画图
+Tissue='Placenta'
+patho_tissue=patho[patho[,'Tissue']==Tissue,]
+colnames(patho_tissue)[2]='Label'
+
+patho_tissue=patho_tissue[complete.cases(patho_tissue$ddPCR), ]
+
+##改NA
+merge=patho_tissue
+merge[is.na(merge)] <- "N/A"
+
+##删失
+merge_non_zero=merge[merge[,'ddPCR']!=0,]
+merge_non_zero$log10ddPCR=log10(merge_non_zero$ddPCR)
+plot_list <- list()
+for (i in 1:length(CPEs)){
+  name=paste(CPEs[i],' in ',Tissue)
+  merge_data=merge_non_zero[,c(CPEs[i],'Label','log10ddPCR','TCD')]
+  colnames(merge_data)=c('CPE_result','Label','log10ddPCR','TCD')
+  merge_data$CPE_result=as.character(merge_data$CPE_result)
+  plot_list[[i]]=ggplot(merge_data, aes(x = TCD, y = log10ddPCR, label=Label,color = CPE_result)) +
+  geom_point() +
+  geom_text(hjust = -0.2, vjust = 0.5) + 
+  labs(x = "TCD", y = "log10ddPCR",title=name) +
+  theme_minimal()
+  #theme(legend.position = "none")
+}
+plot_list
+```
+##不区分病理类型，仅统计不同组织，有/无CEP患者有无统计学差异
+```{r}
+##更新组织信息
+new_patho=read.csv('../new_patho.csv')
+patho=read.csv('../patho.csv')
+##对不同组织画图
+Tissues=unique(patho[,'Tissue'])
+```
+
+```{r}
+j=1
+plot_list <- list()
+library(dplyr)
+library(gridExtra)
+library(ggplot2)
+for (Tissue in Tissues) {
+  tissue_col=which(colnames(new_patho)==gsub(" ", ".", Tissue))
+  patho_tissue <- new_patho[, c(1, 2, 3, tissue_col - 1, tissue_col)]
+  colnames(patho_tissue)[4:5] <- c('Label', 'ddPCR')
+  
+  ##改NA
+  merge <- patho_tissue
+  merge[is.na(merge)] <- "N/A"
+  merge=merge %>% mutate_all(~replace(., . == "NA", "N/A"))
+  
+  ##删失
+  merge_non_PCRna <- merge[merge$ddPCR != "N/A", ]
+  merge_non_PCRna <- merge_non_PCRna[merge_non_PCRna$Label != "N/A", ]
+  merge_non_PCRna$log10_ddPCR=log10(as.numeric(merge_non_PCRna$ddPCR)/10+1)
+  
+  for (feature in c('TCD', 'PCW', 'log10_ddPCR')) {
+    df <- merge_non_PCRna[, c('ID', feature, 'Label')]
+    colnames(df) <- c('ID', 'Feature', 'Label')
+    df$Feature <- as.numeric(df$Feature)
+    compute_p_value <- function() {
+    result <- t.test(Feature ~ Label, data = df)
+    p_value <- round(result$p.value, 3)
+    if (p_value<0.05){p_value=paste(p_value,'*',sep='')}
+    return(p_value)
+    }
+    p_value=tryCatch({
+      compute_p_value()
+    }, error = function(e) {
+    # 打印错误信息
+    cat("错误信息:", conditionMessage(e), "\n")
+    return('N/A')
+    })
+      boxplot <- ggplot(df, aes(x = Label, y = Feature, fill = Label)) +
+      geom_boxplot(outlier.size=-1) +
+      labs(x = Tissue, y = feature) +
+      theme_classic() +
+      scale_fill_manual(values = c("#FFB6C1", "#ADD8E6")) +
+      scale_x_discrete(labels = c('Norm', 'CPE')) +
+      ggtitle(paste("p =", p_value)) +
+      theme(legend.position = "none",
+        axis.text.x = element_text(size = 6),axis.text.y = element_text(size = 8),
+        axis.title.x = element_text(size = 5),axis.title.y = element_text(size = 8),
+        plot.title = element_text(hjust = 0, vjust = 1, size = 5))
+
+      
+      plot_list[[j]] <- boxplot
+      j=j+1
+  }
+}
+
+arranged_plot <- grid.arrange(
+  grobs = plot_list,
+  nrow = 3,
+  ncol = length(Tissues),
+  layout_matrix = matrix(1:length(plot_list), nrow = 3, byrow = FALSE))
+```
+```{r}
+
+library(knitr)
+# 获取R Markdown文档中用到的所有包
+used_packages <- unlist(lapply(purl("linear_mix.Rmd")$code, function(x) {
+  package_match <- regmatches(x, gregexpr("library\\((.*?)\\)", x))
+  if (length(package_match) > 0) {
+    package_names <- gsub("library\\(|\\)", "", package_match[[1]])
+    return(package_names)
+  } else {
+    return(NULL)
+  }
+}))
+
+# 获取包的版本信息
+package_versions <- as.data.frame(installed.packages()[, c("Package", "Version")])
+
+# 筛选出使用的包及其版本
+used_package_versions <- package_versions[package_versions$Package %in% used_packages, ]
+
+# 导出为CSV文件
+write.csv(used_package_versions, "used_package_versions.csv", row.names = FALSE)
+
+```
+
+
